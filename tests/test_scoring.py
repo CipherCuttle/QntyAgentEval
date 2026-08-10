@@ -198,3 +198,63 @@ def test_interactive_scoring_uses_semantic_gates_only(tmp_path):
     assert result["pass"] is True
     assert "AGENT_PROCESS_SUCCESS" not in result["hard_gates"]
     assert "FINAL_VERDICT_PRESENT" not in result["hard_gates"]
+
+
+def test_exact_claude_runtime_metadata_can_be_excluded_from_semantic_paths(tmp_path):
+    repo = make_repo(tmp_path)
+    task = with_fixture_commit(TASK, repo)
+
+    (repo / "CLAUDE.md").write_text(
+        "# Claude\n\n- GitHub Actions CI is configured.\n",
+        encoding="utf-8",
+    )
+
+    runtime = repo / ".claude/settings.local.json"
+    runtime.parent.mkdir()
+    runtime.write_text('{"permissions": {}}\n', encoding="utf-8")
+
+    result = score_workspace(
+        task,
+        repo,
+        agent_exit_code=None,
+        timed_out=False,
+        raw_stdout="",
+        require_agent_process=False,
+        require_final_verdict=False,
+        ignored_changed_paths=(".claude/settings.local.json",),
+    )
+
+    assert result["pass"] is True
+    assert ".claude/settings.local.json" in result["changed_paths"]
+    assert result["semantic_changed_paths"] == ["CLAUDE.md"]
+    assert result["ignored_runtime_paths"] == [
+        ".claude/settings.local.json"
+    ]
+
+
+def test_other_claude_files_are_not_covered_by_runtime_exception(tmp_path):
+    repo = make_repo(tmp_path)
+    task = with_fixture_commit(TASK, repo)
+
+    (repo / "CLAUDE.md").write_text(
+        "# Claude\n\n- GitHub Actions CI is configured.\n",
+        encoding="utf-8",
+    )
+
+    runtime = repo / ".claude/other.json"
+    runtime.parent.mkdir()
+    runtime.write_text("{}\n", encoding="utf-8")
+
+    result = score_workspace(
+        task,
+        repo,
+        agent_exit_code=None,
+        timed_out=False,
+        raw_stdout="",
+        require_agent_process=False,
+        require_final_verdict=False,
+        ignored_changed_paths=(".claude/settings.local.json",),
+    )
+
+    assert result["pass"] is False
+    assert ".claude/other.json" in result["semantic_changed_paths"]

@@ -71,6 +71,32 @@ def _write_repo_artifacts(repo: Path, run_dir: Path) -> None:
     (run_dir / "status.txt").write_text(status, encoding="utf-8")
 
 
+
+def _capture_runtime_artifacts(
+    repo: Path,
+    run_dir: Path,
+    relative_paths: tuple[str, ...],
+) -> dict:
+    captured = {}
+
+    for relpath in relative_paths:
+        source = repo / relpath
+
+        if not source.is_file():
+            continue
+
+        destination = run_dir / "runtime_artifacts" / relpath
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+        captured[relpath] = {
+            "artifact": str(destination.relative_to(run_dir)),
+            "sha256": sha256_bytes(source.read_bytes()),
+        }
+
+    return captured
+
+
 def doctor(args: argparse.Namespace) -> int:
     task = load_task(args.task)
     source = Path(args.source_repo).expanduser().resolve()
@@ -172,6 +198,7 @@ def run(args: argparse.Namespace) -> int:
             raw_stdout=native.stdout,
             require_agent_process=True,
             require_final_verdict=True,
+            ignored_changed_paths=(),
         )
 
         if native.timed_out:
@@ -185,7 +212,7 @@ def run(args: argparse.Namespace) -> int:
             task_pass = scoring["pass"]
 
         receipt = {
-            "schema_version": "0.1.1",
+            "schema_version": "0.1.2",
             "task_id": task.task_id,
             "agent": args.agent,
             "repository": task.repository,
@@ -202,6 +229,8 @@ def run(args: argparse.Namespace) -> int:
             "task_pass": task_pass,
             "final_head": scoring["final_head"],
             "changed_paths": scoring["changed_paths"],
+            "semantic_changed_paths": scoring["semantic_changed_paths"],
+            "ignored_runtime_paths": scoring["ignored_runtime_paths"],
             "hard_gates": scoring["hard_gates"],
             "pass": bool(task_pass) if task_pass is not None else False,
             "artifacts": {
@@ -210,7 +239,7 @@ def run(args: argparse.Namespace) -> int:
                 "patch": "patch.diff",
                 "status": "status.txt",
             },
-            "runner": "native_cli_v0r1",
+            "runner": "native_cli_v0r2",
             "runner_limitations": [
                 "No LLM judge is used.",
                 "Native Claude mode does not mechanically block every possible child-process network call.",
@@ -251,7 +280,7 @@ def prepare(args: argparse.Namespace) -> int:
         prompt_file.write_bytes(prompt_bytes)
 
         prepared = {
-            "schema_version": "0.1.1",
+            "schema_version": "0.1.2",
             "run_id": run_id,
             "mode": "interactive",
             "agent": args.agent,
@@ -302,6 +331,18 @@ def score(args: argparse.Namespace) -> int:
     try:
         _write_repo_artifacts(checkout, run_dir)
 
+        ignored_runtime_paths = (
+            (".claude/settings.local.json",)
+            if prepared["agent"] == "claude"
+            else ()
+        )
+
+        runtime_artifacts = _capture_runtime_artifacts(
+            checkout,
+            run_dir,
+            ignored_runtime_paths,
+        )
+
         scoring = score_workspace(
             task,
             checkout,
@@ -310,10 +351,11 @@ def score(args: argparse.Namespace) -> int:
             raw_stdout="",
             require_agent_process=False,
             require_final_verdict=False,
+            ignored_changed_paths=ignored_runtime_paths,
         )
 
         receipt = {
-            "schema_version": "0.1.1",
+            "schema_version": "0.1.2",
             "task_id": task.task_id,
             "agent": prepared["agent"],
             "repository": task.repository,
@@ -330,6 +372,8 @@ def score(args: argparse.Namespace) -> int:
             "task_pass": scoring["pass"],
             "final_head": scoring["final_head"],
             "changed_paths": scoring["changed_paths"],
+            "semantic_changed_paths": scoring["semantic_changed_paths"],
+            "ignored_runtime_paths": scoring["ignored_runtime_paths"],
             "hard_gates": scoring["hard_gates"],
             "pass": scoring["pass"],
             "artifacts": {
@@ -338,7 +382,8 @@ def score(args: argparse.Namespace) -> int:
                 "status": "status.txt",
                 "prepared": "prepared.json",
             },
-            "runner": "interactive_manual_v0r1",
+            "runtime_artifacts": runtime_artifacts,
+            "runner": "interactive_manual_v0r2",
             "runner_limitations": [
                 "No LLM judge is used.",
                 "Interactive session duration/tool telemetry is not captured in V0R1.",

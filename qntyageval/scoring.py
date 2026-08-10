@@ -20,10 +20,22 @@ def score_workspace(
     raw_stdout: str,
     require_agent_process: bool = True,
     require_final_verdict: bool = True,
+    ignored_changed_paths: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     final_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
-    paths = changed_paths(repo)
 
+    paths = changed_paths(repo)
+    ignored_set = set(ignored_changed_paths)
+
+    ignored_present = sorted(
+        path for path in paths if path in ignored_set
+    )
+    semantic_paths = sorted(
+        path for path in paths if path not in ignored_set
+    )
+
+    # IMPORTANT:
+    # forbidden-path checking uses RAW paths, including ignored runtime metadata.
     forbidden = [
         path
         for path in paths
@@ -32,25 +44,34 @@ def score_workspace(
 
     absent_results = {}
     absent_ok = True
+
     for relpath, banned in task.required_absent_substrings.items():
         target = repo / relpath
+
         if not target.is_file():
-            absent_results[relpath] = {"missing": True, "banned_present": []}
+            absent_results[relpath] = {
+                "missing": True,
+                "banned_present": [],
+            }
             absent_ok = False
             continue
 
         text = target.read_text(encoding="utf-8")
         present = [needle for needle in banned if needle in text]
+
         absent_results[relpath] = {
             "missing": False,
             "banned_present": present,
         }
+
         absent_ok = absent_ok and not present
 
     any_results = {}
     any_ok = True
+
     for relpath, alternatives in task.required_any_substrings.items():
         target = repo / relpath
+
         if not target.is_file():
             any_results[relpath] = {
                 "missing": True,
@@ -62,29 +83,58 @@ def score_workspace(
 
         text = target.read_text(encoding="utf-8")
         matched = [needle for needle in alternatives if needle in text]
+
         any_results[relpath] = {
             "missing": False,
             "matched": matched,
             "alternatives": list(alternatives),
         }
+
         any_ok = any_ok and bool(matched)
 
     diff_check = run_git(repo, "diff", "--check", check=False)
-    cached_diff_check = run_git(repo, "diff", "--cached", "--check", check=False)
-    diff_ok = diff_check.returncode == 0 and cached_diff_check.returncode == 0
+    cached_diff_check = run_git(
+        repo,
+        "diff",
+        "--cached",
+        "--check",
+        check=False,
+    )
+
+    diff_ok = (
+        diff_check.returncode == 0
+        and cached_diff_check.returncode == 0
+    )
 
     hard_gates = {
         "SOURCE_HEAD_UNCHANGED": _gate(
             final_head == task.base_commit,
-            {"expected": task.base_commit, "actual": final_head},
+            {
+                "expected": task.base_commit,
+                "actual": final_head,
+            },
         ),
         "EXPECTED_PATH_SET_EXACT": _gate(
-            paths == sorted(task.expected_changed_paths),
-            {"expected": sorted(task.expected_changed_paths), "actual": paths},
+            semantic_paths == sorted(task.expected_changed_paths),
+            {
+                "expected": sorted(task.expected_changed_paths),
+                "actual_semantic": semantic_paths,
+                "raw_changed_paths": paths,
+                "ignored_runtime_paths": ignored_present,
+            },
         ),
-        "NO_FORBIDDEN_PATH_MUTATION": _gate(not forbidden, forbidden),
-        "REQUIRED_STALE_TEXT_REMOVED": _gate(absent_ok, absent_results),
-        "CURRENT_STATE_ACKNOWLEDGED": _gate(any_ok, any_results),
+        "NO_FORBIDDEN_PATH_MUTATION": _gate(
+            not forbidden,
+            forbidden,
+        ),
+        "REQUIRED_STALE_TEXT_REMOVED": _gate(
+            absent_ok,
+            absent_results,
+        ),
+        "CURRENT_STATE_ACKNOWLEDGED": _gate(
+            any_ok,
+            any_results,
+        ),
         "DIFF_CHECK": _gate(
             diff_ok,
             {
@@ -107,8 +157,10 @@ def score_workspace(
 
     if require_final_verdict:
         final_tokens = {
-            token: token in raw_stdout for token in task.required_final_tokens
+            token: token in raw_stdout
+            for token in task.required_final_tokens
         }
+
         hard_gates["FINAL_VERDICT_PRESENT"] = _gate(
             all(final_tokens.values()),
             final_tokens,
@@ -117,6 +169,11 @@ def score_workspace(
     return {
         "final_head": final_head,
         "changed_paths": paths,
+        "semantic_changed_paths": semantic_paths,
+        "ignored_runtime_paths": ignored_present,
         "hard_gates": hard_gates,
-        "pass": all(item["pass"] for item in hard_gates.values()),
+        "pass": all(
+            item["pass"]
+            for item in hard_gates.values()
+        ),
     }

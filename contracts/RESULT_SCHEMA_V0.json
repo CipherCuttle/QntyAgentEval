@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "QntyAgentEval Result V0R1",
+  "title": "QntyAgentEval Result V0R2",
   "type": "object",
   "required": [
     "schema_version",
@@ -17,11 +17,13 @@
     "changed_paths",
     "final_head",
     "artifacts",
-    "runner"
+    "runner",
+    "semantic_changed_paths",
+    "ignored_runtime_paths"
   ],
   "properties": {
     "schema_version": {
-      "const": "0.1.1"
+      "const": "0.1.2"
     },
     "task_id": {
       "type": "string"
@@ -80,6 +82,21 @@
     },
     "runner": {
       "type": "string"
+    },
+    "semantic_changed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ignored_runtime_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "runtime_artifacts": {
+      "type": "object"
     }
   }
 }

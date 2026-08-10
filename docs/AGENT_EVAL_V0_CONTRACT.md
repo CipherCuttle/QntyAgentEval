@@ -79,3 +79,20 @@ scoring, authority isolation, or the stated objective.
 Kill or radically simplify V0 if four historical tasks cannot eventually be
 scored with stable objective gates without creating a bespoke platform or
 adding an LLM judge to determine success.
+
+## Runner-owned runtime metadata
+
+A runner adapter may declare an exact runner-owned runtime path that is excluded
+from the semantic changed-path gate only when all of the following hold:
+
+- the path is produced by the tool interface rather than the requested task;
+- the exemption is an exact path, never a directory wildcard;
+- the raw changed path remains recorded;
+- the artifact is preserved and SHA-256 hashed when present;
+- forbidden-path checking still operates on the raw changed-path set.
+
+For Claude Code interactive V0R2, the sole allowed runtime path is:
+
+`.claude/settings.local.json`
+
+This exception does not authorize any other `.claude/` mutation.
