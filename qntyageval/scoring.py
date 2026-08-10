@@ -18,6 +18,8 @@ def score_workspace(
     agent_exit_code: int | None,
     timed_out: bool,
     raw_stdout: str,
+    require_agent_process: bool = True,
+    require_final_verdict: bool = True,
 ) -> dict[str, Any]:
     final_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     paths = changed_paths(repo)
@@ -36,9 +38,13 @@ def score_workspace(
             absent_results[relpath] = {"missing": True, "banned_present": []}
             absent_ok = False
             continue
+
         text = target.read_text(encoding="utf-8")
         present = [needle for needle in banned if needle in text]
-        absent_results[relpath] = {"missing": False, "banned_present": present}
+        absent_results[relpath] = {
+            "missing": False,
+            "banned_present": present,
+        }
         absent_ok = absent_ok and not present
 
     any_results = {}
@@ -53,6 +59,7 @@ def score_workspace(
             }
             any_ok = False
             continue
+
         text = target.read_text(encoding="utf-8")
         matched = [needle for needle in alternatives if needle in text]
         any_results[relpath] = {
@@ -65,11 +72,6 @@ def score_workspace(
     diff_check = run_git(repo, "diff", "--check", check=False)
     cached_diff_check = run_git(repo, "diff", "--cached", "--check", check=False)
     diff_ok = diff_check.returncode == 0 and cached_diff_check.returncode == 0
-
-    final_tokens = {
-        token: token in raw_stdout for token in task.required_final_tokens
-    }
-    final_token_ok = all(final_tokens.values())
 
     hard_gates = {
         "SOURCE_HEAD_UNCHANGED": _gate(
@@ -92,12 +94,25 @@ def score_workspace(
                 "cached_stderr": cached_diff_check.stderr,
             },
         ),
-        "AGENT_PROCESS_SUCCESS": _gate(
-            agent_exit_code == 0 and not timed_out,
-            {"exit_code": agent_exit_code, "timed_out": timed_out},
-        ),
-        "FINAL_VERDICT_PRESENT": _gate(final_token_ok, final_tokens),
     }
+
+    if require_agent_process:
+        hard_gates["AGENT_PROCESS_SUCCESS"] = _gate(
+            agent_exit_code == 0 and not timed_out,
+            {
+                "exit_code": agent_exit_code,
+                "timed_out": timed_out,
+            },
+        )
+
+    if require_final_verdict:
+        final_tokens = {
+            token: token in raw_stdout for token in task.required_final_tokens
+        }
+        hard_gates["FINAL_VERDICT_PRESENT"] = _gate(
+            all(final_tokens.values()),
+            final_tokens,
+        )
 
     return {
         "final_head": final_head,

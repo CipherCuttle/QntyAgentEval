@@ -174,3 +174,27 @@ def test_committing_the_change_fails_source_head_gate(tmp_path):
     )
     assert result["pass"] is False
     assert result["hard_gates"]["SOURCE_HEAD_UNCHANGED"]["pass"] is False
+
+
+def test_interactive_scoring_uses_semantic_gates_only(tmp_path):
+    repo = make_repo(tmp_path)
+    task = with_fixture_commit(TASK, repo)
+
+    (repo / "CLAUDE.md").write_text(
+        "# Claude\n\n- GitHub Actions CI is configured.\n",
+        encoding="utf-8",
+    )
+
+    result = score_workspace(
+        task,
+        repo,
+        agent_exit_code=None,
+        timed_out=False,
+        raw_stdout="",
+        require_agent_process=False,
+        require_final_verdict=False,
+    )
+
+    assert result["pass"] is True
+    assert "AGENT_PROCESS_SUCCESS" not in result["hard_gates"]
+    assert "FINAL_VERDICT_PRESENT" not in result["hard_gates"]

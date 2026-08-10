@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +20,7 @@ def _command_version(binary: str) -> str:
     path = shutil.which(binary)
     if not path:
         return "NOT_FOUND"
+
     proc = subprocess.run(
         [binary, "--version"],
         text=True,
@@ -35,6 +34,7 @@ def _command_version(binary: str) -> str:
 def _help_contains(command: list[str], required: list[str]) -> dict[str, bool]:
     if not shutil.which(command[0]):
         return {flag: False for flag in required}
+
     proc = subprocess.run(
         command,
         text=True,
@@ -46,21 +46,50 @@ def _help_contains(command: list[str], required: list[str]) -> dict[str, bool]:
     return {flag: flag in output for flag in required}
 
 
+def _run_id(task_id: str, suffix: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{stamp}_{task_id}_{suffix}"
+
+
+def _write_repo_artifacts(repo: Path, run_dir: Path) -> None:
+    diff = run_git(repo, "diff", "--binary", "HEAD", check=False)
+    cached = run_git(repo, "diff", "--cached", "--binary", "HEAD", check=False)
+
+    (run_dir / "patch.diff").write_text(
+        diff.stdout + cached.stdout,
+        encoding="utf-8",
+    )
+
+    status = run_git(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignored=matching",
+        check=False,
+    ).stdout
+    (run_dir / "status.txt").write_text(status, encoding="utf-8")
+
+
 def doctor(args: argparse.Namespace) -> int:
     task = load_task(args.task)
     source = Path(args.source_repo).expanduser().resolve()
+
     claude_flags = _help_contains(
         ["claude", "--help"],
         ["--output-format", "--permission-mode", "--disallowedTools"],
     )
+
     codex_global_flags = _help_contains(
         ["codex", "--help"],
         ["--ask-for-approval"],
     )
+
     codex_exec_flags = _help_contains(
         ["codex", "exec", "--help"],
         ["--json", "--ephemeral", "--sandbox"],
     )
+
     checks = {
         "git": _command_version("git"),
         "claude": _command_version("claude"),
@@ -74,32 +103,42 @@ def doctor(args: argparse.Namespace) -> int:
         "base_commit": task.base_commit,
         "base_commit_available": False,
     }
+
     if source.is_dir():
         proc = subprocess.run(
-            ["git", "-C", str(source), "cat-file", "-e", f"{task.base_commit}^{{commit}}"],
+            [
+                "git",
+                "-C",
+                str(source),
+                "cat-file",
+                "-e",
+                f"{task.base_commit}^{{commit}}",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
         checks["base_commit_available"] = proc.returncode == 0
+
     print(json.dumps(checks, indent=2))
+
     compatible = (
         all(claude_flags.values())
         and all(codex_global_flags.values())
         and all(codex_exec_flags.values())
     )
+
     return 0 if checks["base_commit_available"] and compatible else 2
 
 
 def run(args: argparse.Namespace) -> int:
     task = load_task(args.task)
+
     prompt_bytes = task.prompt_path.read_bytes()
     prompt = prompt_bytes.decode("utf-8")
 
     checkout = prepare_workspace(task, args.source_repo)
-    run_id = (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        + f"_{task.task_id}_{args.agent}"
-    )
+
+    run_id = _run_id(task.task_id, args.agent)
     runs_dir = Path(args.runs_dir).resolve()
     run_dir = runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -114,16 +153,16 @@ def run(args: argparse.Namespace) -> int:
             max_turns=args.max_turns,
         )
 
-        (run_dir / "stdout.jsonl").write_text(native.stdout, encoding="utf-8")
-        (run_dir / "stderr.txt").write_text(native.stderr, encoding="utf-8")
+        (run_dir / "stdout.jsonl").write_text(
+            native.stdout,
+            encoding="utf-8",
+        )
+        (run_dir / "stderr.txt").write_text(
+            native.stderr,
+            encoding="utf-8",
+        )
 
-        diff = run_git(checkout, "diff", "--binary", "HEAD", check=False)
-        cached = run_git(checkout, "diff", "--cached", "--binary", "HEAD", check=False)
-        patch = diff.stdout + cached.stdout
-        (run_dir / "patch.diff").write_text(patch, encoding="utf-8")
-
-        status = run_git(checkout, "status", "--porcelain=v1").stdout
-        (run_dir / "status.txt").write_text(status, encoding="utf-8")
+        _write_repo_artifacts(checkout, run_dir)
 
         scoring = score_workspace(
             task,
@@ -131,10 +170,22 @@ def run(args: argparse.Namespace) -> int:
             agent_exit_code=native.exit_code,
             timed_out=native.timed_out,
             raw_stdout=native.stdout,
+            require_agent_process=True,
+            require_final_verdict=True,
         )
 
+        if native.timed_out:
+            evaluation_status = "RUNNER_TIMEOUT"
+            task_pass = None
+        elif native.exit_code != 0:
+            evaluation_status = "RUNNER_FAILURE"
+            task_pass = None
+        else:
+            evaluation_status = "COMPLETED"
+            task_pass = scoring["pass"]
+
         receipt = {
-            "schema_version": "0.1.0",
+            "schema_version": "0.1.1",
             "task_id": task.task_id,
             "agent": args.agent,
             "repository": task.repository,
@@ -147,26 +198,160 @@ def run(args: argparse.Namespace) -> int:
             "agent_exit_code": native.exit_code,
             "timed_out": native.timed_out,
             "duration_seconds": round(native.duration_seconds, 6),
+            "evaluation_status": evaluation_status,
+            "task_pass": task_pass,
             "final_head": scoring["final_head"],
             "changed_paths": scoring["changed_paths"],
             "hard_gates": scoring["hard_gates"],
-            "pass": scoring["pass"],
+            "pass": bool(task_pass) if task_pass is not None else False,
             "artifacts": {
                 "stdout": "stdout.jsonl",
                 "stderr": "stderr.txt",
                 "patch": "patch.diff",
                 "status": "status.txt",
             },
-            "runner": "native_cli_v0",
+            "runner": "native_cli_v0r1",
             "runner_limitations": [
                 "No LLM judge is used.",
-                "Claude native mode does not mechanically block all child-process network access.",
+                "Native Claude mode does not mechanically block every possible child-process network call.",
                 "Model identity is fully frozen only when --model is supplied.",
             ],
         }
+
         write_receipt(run_dir / "result.json", receipt)
         print(json.dumps(receipt, indent=2))
+
+        if evaluation_status != "COMPLETED":
+            return 2
+
+        return 0 if task_pass else 1
+
+    finally:
+        if args.keep_workspace:
+            print(f"WORKSPACE_PRESERVED={checkout}", file=sys.stderr)
+        else:
+            cleanup_workspace(checkout)
+
+
+def prepare(args: argparse.Namespace) -> int:
+    task_file = Path(args.task).resolve()
+    task = load_task(task_file)
+
+    checkout = prepare_workspace(task, args.source_repo)
+
+    run_id = _run_id(task.task_id, f"{args.agent}_interactive")
+    runs_dir = Path(args.runs_dir).resolve()
+    run_dir = runs_dir / run_id
+
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+
+        prompt_bytes = task.prompt_path.read_bytes()
+        prompt_file = run_dir / "prompt.md"
+        prompt_file.write_bytes(prompt_bytes)
+
+        prepared = {
+            "schema_version": "0.1.1",
+            "run_id": run_id,
+            "mode": "interactive",
+            "agent": args.agent,
+            "repository": task.repository,
+            "task_id": task.task_id,
+            "task_file": str(task_file),
+            "base_commit": task.base_commit,
+            "prompt_sha256": sha256_bytes(prompt_bytes),
+            "prompt_file": str(prompt_file),
+            "workspace": str(checkout),
+        }
+
+        write_receipt(run_dir / "prepared.json", prepared)
+
+        print(json.dumps(prepared, indent=2))
+        return 0
+
+    except Exception:
+        cleanup_workspace(checkout)
+        raise
+
+
+def score(args: argparse.Namespace) -> int:
+    runs_dir = Path(args.runs_dir).resolve()
+    run_dir = runs_dir / args.run_id
+
+    prepared_file = run_dir / "prepared.json"
+    if not prepared_file.is_file():
+        raise SystemExit(f"prepared run not found: {prepared_file}")
+
+    prepared = json.loads(prepared_file.read_text(encoding="utf-8"))
+
+    if prepared.get("mode") != "interactive":
+        raise SystemExit("score only accepts an interactive prepared run")
+
+    checkout = Path(prepared["workspace"]).resolve()
+    task = load_task(prepared["task_file"])
+
+    if task.task_id != prepared["task_id"]:
+        raise SystemExit("prepared task identity mismatch")
+
+    if task.base_commit != prepared["base_commit"]:
+        raise SystemExit("prepared base commit mismatch")
+
+    if not checkout.is_dir():
+        raise SystemExit(f"prepared workspace no longer exists: {checkout}")
+
+    try:
+        _write_repo_artifacts(checkout, run_dir)
+
+        scoring = score_workspace(
+            task,
+            checkout,
+            agent_exit_code=None,
+            timed_out=False,
+            raw_stdout="",
+            require_agent_process=False,
+            require_final_verdict=False,
+        )
+
+        receipt = {
+            "schema_version": "0.1.1",
+            "task_id": task.task_id,
+            "agent": prepared["agent"],
+            "repository": task.repository,
+            "base_commit": task.base_commit,
+            "prompt_sha256": prepared["prompt_sha256"],
+            "agent_version": _command_version(prepared["agent"]),
+            "model_request": None,
+            "command": None,
+            "pid": None,
+            "agent_exit_code": None,
+            "timed_out": False,
+            "duration_seconds": 0.0,
+            "evaluation_status": "COMPLETED",
+            "task_pass": scoring["pass"],
+            "final_head": scoring["final_head"],
+            "changed_paths": scoring["changed_paths"],
+            "hard_gates": scoring["hard_gates"],
+            "pass": scoring["pass"],
+            "artifacts": {
+                "prompt": "prompt.md",
+                "patch": "patch.diff",
+                "status": "status.txt",
+                "prepared": "prepared.json",
+            },
+            "runner": "interactive_manual_v0r1",
+            "runner_limitations": [
+                "No LLM judge is used.",
+                "Interactive session duration/tool telemetry is not captured in V0R1.",
+                "Interactive Claude can invoke tools outside the harness process boundary; task instructions remain part of the frozen fixture.",
+                "Final prose verdict is telemetry, not a hard gate in interactive mode.",
+            ],
+        }
+
+        write_receipt(run_dir / "result.json", receipt)
+        print(json.dumps(receipt, indent=2))
+
         return 0 if receipt["pass"] else 1
+
     finally:
         if args.keep_workspace:
             print(f"WORKSPACE_PRESERVED={checkout}", file=sys.stderr)
@@ -195,6 +380,19 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--runs-dir", default="runs")
     r.add_argument("--keep-workspace", action="store_true")
     r.set_defaults(func=run)
+
+    prep = sub.add_parser("prepare")
+    prep.add_argument("--task", default=default_task)
+    prep.add_argument("--agent", default="claude", choices=["claude", "codex"])
+    prep.add_argument("--source-repo", required=True)
+    prep.add_argument("--runs-dir", default="runs")
+    prep.set_defaults(func=prepare)
+
+    s = sub.add_parser("score")
+    s.add_argument("--run-id", required=True)
+    s.add_argument("--runs-dir", default="runs")
+    s.add_argument("--keep-workspace", action="store_true")
+    s.set_defaults(func=score)
 
     return p
 

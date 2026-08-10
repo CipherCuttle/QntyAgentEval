@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "QntyAgentEval Result V0",
+  "title": "QntyAgentEval Result V0R1",
   "type": "object",
   "required": [
     "schema_version",
@@ -10,15 +10,18 @@
     "agent_exit_code",
     "timed_out",
     "duration_seconds",
+    "evaluation_status",
+    "task_pass",
     "hard_gates",
     "pass",
     "changed_paths",
     "final_head",
-    "artifacts"
+    "artifacts",
+    "runner"
   ],
   "properties": {
     "schema_version": {
-      "const": "0.1.0"
+      "const": "0.1.1"
     },
     "task_id": {
       "type": "string"
@@ -44,6 +47,19 @@
     "duration_seconds": {
       "type": "number"
     },
+    "evaluation_status": {
+      "enum": [
+        "COMPLETED",
+        "RUNNER_FAILURE",
+        "RUNNER_TIMEOUT"
+      ]
+    },
+    "task_pass": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "hard_gates": {
       "type": "object"
     },
@@ -61,6 +77,9 @@
     },
     "artifacts": {
       "type": "object"
+    },
+    "runner": {
+      "type": "string"
     }
   }
 }
