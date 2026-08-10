@@ -1,0 +1,34 @@
+name: QntyAgentEval remote evaluation
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Evaluate trusted Fixture 001 scorer
+        run: python -m qntyageval.remote --event "$GITHUB_EVENT_PATH" --output result-comment.md
+      - name: Upsert authoritative result comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in ''|*[!0-9]*) exit 1;; esac
+          endpoint="repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments"
+          existing_id="$(gh api --paginate "$endpoint" --jq '.[] | select(.body | contains("QNTY_EVAL_RESULT_V0")) | .id' | head -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" -F body=@result-comment.md
+          else
+            gh api --method POST "$endpoint" -F body=@result-comment.md
+          fi

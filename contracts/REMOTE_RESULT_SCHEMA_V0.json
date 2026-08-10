@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "request_issue", "task_id", "target_repo", "target_sha", "base_commit", "evaluation_status", "task_pass", "hard_gates", "changed_paths", "evaluator_commit"],
+  "properties": {
+    "schema_version": {"const": "0.1.0"},
+    "request_issue": {"type": "integer", "minimum": 1},
+    "task_id": {"type": ["string", "null"]},
+    "target_repo": {"type": ["string", "null"]},
+    "target_sha": {"type": ["string", "null"]},
+    "base_commit": {"type": ["string", "null"]},
+    "evaluation_status": {"enum": ["COMPLETED", "INVALID_REQUEST", "UNSUPPORTED_TASK", "TARGET_NOT_FOUND", "BASE_NOT_ANCESTOR_OR_INCOMPATIBLE", "EVALUATOR_ERROR"]},
+    "task_pass": {"type": ["boolean", "null"]},
+    "hard_gates": {"type": "object"},
+    "changed_paths": {"type": "array", "items": {"type": "string"}},
+    "evaluator_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}
