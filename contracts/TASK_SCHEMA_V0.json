@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QntyAgentEval Task V0",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "task_id",
+    "repository",
+    "base_commit",
+    "prompt_path",
+    "expected_changed_paths",
+    "forbidden_path_prefixes",
+    "required_absent_substrings",
+    "required_any_substrings",
+    "required_final_tokens",
+    "hard_fail_conditions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "prompt_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_changed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbidden_path_prefixes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "required_absent_substrings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required_any_substrings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required_final_tokens": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "hard_fail_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

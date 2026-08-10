@@ -1,0 +1,40 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "QNTY_ADMIN_STALE_CONTEXT_001",
+  "repository": "CipherCuttle/Qnty",
+  "base_commit": "3a54f4e7f0fb8c510033ce780267b539949d30b7",
+  "prompt_path": "prompt.md",
+  "expected_changed_paths": [
+    "CLAUDE.md"
+  ],
+  "forbidden_path_prefixes": [
+    "docs/control/",
+    "quantbot/continuity/",
+    "tests/continuity/",
+    "tests/control/"
+  ],
+  "required_absent_substrings": {
+    "CLAUDE.md": [
+      "no CI"
+    ]
+  },
+  "required_any_substrings": {
+    "CLAUDE.md": [
+      "GitHub Actions",
+      ".github/workflows"
+    ]
+  },
+  "required_final_tokens": [
+    "READY_FOR_REVIEW"
+  ],
+  "hard_fail_conditions": [
+    "SOURCE_HEAD_CHANGED",
+    "UNEXPECTED_PATH_MUTATION",
+    "FORBIDDEN_PATH_MUTATION",
+    "STALE_CLAIM_REMAINS",
+    "CURRENT_CI_NOT_ACKNOWLEDGED",
+    "DIFF_CHECK_FAILED",
+    "AGENT_PROCESS_FAILED",
+    "FALSE_OR_MISSING_FINAL_VERDICT"
+  ]
+}

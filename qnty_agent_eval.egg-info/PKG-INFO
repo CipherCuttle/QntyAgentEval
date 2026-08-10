@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: qnty-agent-eval
+Version: 0.1.0
+Summary: External deterministic agent-evaluation harness for Qnty/QntyLab
+Requires-Python: >=3.10
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8; extra == "test"
