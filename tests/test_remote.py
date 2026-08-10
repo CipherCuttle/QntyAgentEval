@@ -1,4 +1,5 @@
 import subprocess
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from qntyageval.remote import (
     RequestError,
     comment_for,
     comment_for_v1,
+    main,
     make_result,
     make_result_v1,
     materialize_completed_work,
@@ -212,3 +214,70 @@ def test_v1_boundary_observation_is_required_for_pass():
     assert interpret_observation(evidence) == ("COMPLETED", True)
     evidence["boundary_observation"] = '{"docker_socket_visible": true}'
     assert interpret_observation(evidence) == ("COMPLETED", False)
+
+
+def remote_event(title: str, body: str, number: int = 7) -> dict:
+    return {"issue": {"number": number, "title": title, "body": body}}
+
+
+def run_remote_main(tmp_path: Path, monkeypatch, event: dict, result: dict, *, version: str):
+    import qntyageval.remote as remote
+
+    if version == "V0":
+        monkeypatch.setattr(remote, "evaluate_request", lambda *args: result)
+    else:
+        monkeypatch.setattr(remote, "evaluate_v1_request", lambda *args: result)
+    event_path = tmp_path / "event.json"
+    output_path = tmp_path / "result-comment.md"
+    event_path.write_text(json.dumps(event), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["qntyageval.remote", "--event", str(event_path), "--output", str(output_path)])
+    assert main() == 0
+    return output_path.read_text(encoding="utf-8")
+
+
+def test_top_level_valid_v0_result_uses_v0_renderer(tmp_path, monkeypatch):
+    result = make_result(request_issue=7, request={"task_id": TASK.task_id, "target_repo": "CipherCuttle/Qnty", "target_sha": "a" * 40}, base_commit="b" * 40, evaluation_status="COMPLETED", task_pass=True, hard_gates={"A": {"pass": True}}, changed_paths=[], evaluator_commit="c" * 40)
+    comment = run_remote_main(tmp_path, monkeypatch, remote_event(ISSUE_TITLE, GOOD_BODY.format(sha="a" * 40)), result, version="V0")
+    assert RESULT_SENTINEL in comment
+    assert V1_RESULT_SENTINEL not in comment
+
+
+@pytest.mark.parametrize("task_pass", [True, False])
+def test_top_level_completed_v1_result_uses_v1_renderer_without_hard_gates(tmp_path, monkeypatch, task_pass):
+    result = make_result_v1(request_issue=7, request={"operation": V1_OPERATION, "target_repo": "CipherCuttle/Qnty", "target_sha": "a" * 40}, evaluation_status="COMPLETED", task_pass=task_pass, sandbox_evidence={}, evaluator_commit="b" * 40)
+    body = "QNTY_EVAL_REQUEST_V1\n" + json.dumps({"schema_version": "0.2.0", "operation": V1_OPERATION, "target_repo": "CipherCuttle/Qnty", "target_sha": "a" * 40}, separators=(",", ":"))
+    comment = run_remote_main(tmp_path, monkeypatch, remote_event(V1_ISSUE_TITLE, body), result, version="V1")
+    assert V1_RESULT_SENTINEL in comment
+    assert RESULT_SENTINEL not in comment
+    assert "hard_gates" not in comment
+
+
+def test_top_level_invalid_v1_request_uses_v1_renderer(tmp_path, monkeypatch):
+    event_path = tmp_path / "event.json"
+    output_path = tmp_path / "result-comment.md"
+    event_path.write_text(json.dumps(remote_event(V1_ISSUE_TITLE, "malformed")), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["qntyageval.remote", "--event", str(event_path), "--output", str(output_path)])
+    assert main() == 0
+    comment = output_path.read_text(encoding="utf-8")
+    assert V1_RESULT_SENTINEL in comment
+    assert RESULT_SENTINEL not in comment
+
+
+def test_top_level_v1_evaluator_exception_is_v1_infrastructure_result(tmp_path, monkeypatch):
+    import qntyageval.remote as remote
+
+    def fail(*args):
+        raise RuntimeError("inspect unavailable")
+
+    monkeypatch.setattr(remote, "evaluate_v1_request", fail)
+    body = "QNTY_EVAL_REQUEST_V1\n" + json.dumps({"schema_version": "0.2.0", "operation": V1_OPERATION, "target_repo": "CipherCuttle/Qnty", "target_sha": "a" * 40}, separators=(",", ":"))
+    event_path = tmp_path / "event.json"
+    output_path = tmp_path / "result-comment.md"
+    event_path.write_text(json.dumps(remote_event(V1_ISSUE_TITLE, body)), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["qntyageval.remote", "--event", str(event_path), "--output", str(output_path)])
+    assert main() == 0
+    comment = output_path.read_text(encoding="utf-8")
+    assert V1_RESULT_SENTINEL in comment
+    assert RESULT_SENTINEL not in comment
+    assert '"evaluation_status": "EVALUATOR_ERROR"' in comment
+    assert '"task_pass": null' in comment

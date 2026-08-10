@@ -33,6 +33,8 @@ V1_RESULT_SCHEMA = "0.2.0"
 V1_OPERATION = "QNTY_SANDBOX_EXECUTION_SMOKE_V1"
 V1_CONTROL_COMMIT = "3a54f4e7f0fb8c510033ce780267b539949d30b7"
 V1_ALLOWED_REQUEST_FIELDS = {"schema_version", "operation", "target_repo", "target_sha"}
+RESULT_VERSION_V0 = "V0"
+RESULT_VERSION_V1 = "V1"
 
 
 class RequestError(ValueError):
@@ -249,7 +251,7 @@ def comment_for(result: dict[str, Any]) -> str:
     return f"{summary}\n\n{RESULT_SENTINEL}\n```json\n{json.dumps(result, sort_keys=True, indent=2)}\n```\n"
 
 
-def _event_result(event_path: Path, evaluator_repo: Path) -> dict[str, Any]:
+def _event_result(event_path: Path, evaluator_repo: Path) -> tuple[str, dict[str, Any]]:
     title = ""
     try:
         event = json.loads(event_path.read_text(encoding="utf-8"))
@@ -261,18 +263,18 @@ def _event_result(event_path: Path, evaluator_repo: Path) -> dict[str, Any]:
             raise RequestError("INVALID_REQUEST", "issue number is invalid")
         if title == V1_ISSUE_TITLE:
             request = parse_request_v1(title, body or "")
-            return evaluate_v1_request(request, evaluator_repo, issue_number)
+            return RESULT_VERSION_V1, evaluate_v1_request(request, evaluator_repo, issue_number)
         request = parse_request(title, body or "")
-        return evaluate_request(request, evaluator_repo, issue_number)
+        return RESULT_VERSION_V0, evaluate_request(request, evaluator_repo, issue_number)
     except RequestError as exc:
         if title == V1_ISSUE_TITLE:
-            return make_result_v1(
+            return RESULT_VERSION_V1, make_result_v1(
                 request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
                 request={"operation": None, "target_repo": None, "target_sha": None},
                 evaluation_status=exc.status, task_pass=None, sandbox_evidence={"REQUEST_VALID": False, "evidence": str(exc)},
                 evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip(),
             )
-        return make_result(
+        return RESULT_VERSION_V0, make_result(
             request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
             request={"task_id": None, "target_repo": None, "target_sha": None},
             base_commit=None, evaluation_status=exc.status, task_pass=None,
@@ -281,14 +283,14 @@ def _event_result(event_path: Path, evaluator_repo: Path) -> dict[str, Any]:
         )
     except Exception as exc:
         if title == V1_ISSUE_TITLE:
-            return make_result_v1(
+            return RESULT_VERSION_V1, make_result_v1(
                 request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
                 request={"operation": None, "target_repo": None, "target_sha": None},
                 evaluation_status="EVALUATOR_ERROR", task_pass=None,
                 sandbox_evidence={"evaluator_error": str(exc)},
                 evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip(),
             )
-        return make_result(
+        return RESULT_VERSION_V0, make_result(
             request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
             request={"task_id": None, "target_repo": None, "target_sha": None},
             base_commit=None, evaluation_status="EVALUATOR_ERROR", task_pass=None,
@@ -302,8 +304,9 @@ def main() -> int:
     parser.add_argument("--event", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    result = _event_result(args.event, Path.cwd())
-    args.output.write_text(comment_for(result), encoding="utf-8")
+    result_version, result = _event_result(args.event, Path.cwd())
+    renderer = comment_for_v1 if result_version == RESULT_VERSION_V1 else comment_for
+    args.output.write_text(renderer(result), encoding="utf-8")
     return 0
 
 
