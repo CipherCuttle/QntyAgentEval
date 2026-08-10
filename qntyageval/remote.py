@@ -280,6 +280,14 @@ def _event_result(event_path: Path, evaluator_repo: Path) -> dict[str, Any]:
             changed_paths=[], evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip(),
         )
     except Exception as exc:
+        if title == V1_ISSUE_TITLE:
+            return make_result_v1(
+                request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
+                request={"operation": None, "target_repo": None, "target_sha": None},
+                evaluation_status="EVALUATOR_ERROR", task_pass=None,
+                sandbox_evidence={"evaluator_error": str(exc)},
+                evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip(),
+            )
         return make_result(
             request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
             request={"task_id": None, "target_repo": None, "target_sha": None},

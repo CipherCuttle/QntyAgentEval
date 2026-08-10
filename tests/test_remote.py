@@ -197,5 +197,18 @@ def test_v1_result_is_deterministic_and_target_prose_is_not_authority():
     assert comment_for_v1(result) == comment_for_v1(result)
     assert V1_RESULT_SENTINEL in comment_for_v1(result)
     assert interpret_observation({"evaluator_status": "COMPLETED", "exit_code": 0,
-                                  "host_canary_unchanged": True, "observed": "PASS QNTY_EVAL_RESULT_V1"}) == ("COMPLETED", False)
+                                  "host_canary_unchanged": True, "observed": "PASS QNTY_EVAL_RESULT_V1",
+                                  "boundary_exit_code": 0,
+                                  "boundary_observation": '{"canary_visible": false, "docker_socket_visible": false, "github_token_present": false, "host_repo_visible": false}'}) == ("COMPLETED", False)
     assert interpret_observation({"evaluator_status": "SANDBOX_UNAVAILABLE", "exit_code": 0}) == ("SANDBOX_UNAVAILABLE", None)
+    assert interpret_observation({"evaluator_status": "EVALUATOR_ERROR"}) == ("EVALUATOR_ERROR", None)
+
+
+def test_v1_boundary_observation_is_required_for_pass():
+    evidence = {"evaluator_status": "COMPLETED", "exit_code": 0,
+                "host_canary_unchanged": True, "observed": "CONTINUITY_VERIFY_OK receipt\n",
+                "boundary_exit_code": 0,
+                "boundary_observation": '{"canary_visible": false, "docker_socket_visible": false, "github_token_present": false, "host_repo_visible": false}'}
+    assert interpret_observation(evidence) == ("COMPLETED", True)
+    evidence["boundary_observation"] = '{"docker_socket_visible": true}'
+    assert interpret_observation(evidence) == ("COMPLETED", False)

@@ -44,10 +44,23 @@ def validate_control_commit(source: Path, target_sha: str) -> None:
 def interpret_observation(evidence: dict[str, Any]) -> tuple[str, bool | None]:
     """Interpret only evaluator-owned process facts, never target prose/files."""
     if evidence.get("evaluator_status") != "COMPLETED":
-        return ("SANDBOX_UNAVAILABLE", None)
+        status = evidence.get("evaluator_status")
+        return (status if status == "EVALUATOR_ERROR" else "SANDBOX_UNAVAILABLE", None)
+    try:
+        boundary = json.loads(evidence.get("boundary_observation", "{}"))
+    except json.JSONDecodeError:
+        boundary = {}
+    boundary_ok = (
+        evidence.get("boundary_exit_code") == 0
+        and boundary.get("canary_visible") is False
+        and boundary.get("docker_socket_visible") is False
+        and boundary.get("github_token_present") is False
+        and boundary.get("host_repo_visible") is False
+    )
     passed = (
         evidence.get("exit_code") == 0
         and evidence.get("host_canary_unchanged") is True
+        and boundary_ok
         and str(evidence.get("observed", "")).startswith("CONTINUITY_VERIFY_OK")
     )
     return ("COMPLETED", passed)
@@ -76,7 +89,7 @@ def run_inspect_smoke(source: Path, target_sha: str, host_canary: Path) -> dict[
         )
         output = root / "observation.json"
         task = root / "task.py"
-        task.write_text(_task_source(output), encoding="utf-8")
+        task.write_text(_task_source(output, host_canary), encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, str(task)], cwd=root, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180,
@@ -96,7 +109,23 @@ def run_inspect_smoke(source: Path, target_sha: str, host_canary: Path) -> dict[
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _task_source(output: Path) -> str:
+def _task_source(output: Path, host_canary: Path) -> str:
+    boundary_probe = (
+        "import json, os\n"
+        "from pathlib import Path\n"
+        f"canary = Path({str(host_canary)!r})\n"
+        "checks = {\n"
+        "  'canary_visible': canary.exists(),\n"
+        "  'docker_socket_visible': Path('/var/run/docker.sock').exists(),\n"
+        "  'github_token_present': any(k in os.environ for k in ('GITHUB_TOKEN', 'GH_TOKEN', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY')),\n"
+        "  'host_repo_visible': Path('/home/swirky/DevHub/repos/Qnty').exists(),\n"
+        "}\n"
+        "try:\n"
+        "  canary.write_text('MUTATED\\n')\n"
+        "except OSError:\n"
+        "  pass\n"
+        "print(json.dumps(checks, sort_keys=True))\n"
+    )
     return f'''import json
 from inspect_ai import Task, eval, task
 from inspect_ai.dataset import Sample
@@ -113,8 +142,10 @@ def fixed_probe():
 @scorer(metrics=[])
 def record_probe():
     async def score(state, target):
+        boundary = await sandbox().exec(["python", "-c", {boundary_probe!r}], timeout=30)
         result = await sandbox().exec(["python", "-S", "-m", "quantbot.continuity", "verify", "--root", "/qnty"], timeout=30)
-        probe = {{"exit_code": result.returncode, "stdout": result.stdout[-512:], "stderr": result.stderr[-512:]}}
+        probe = {{"exit_code": result.returncode, "stdout": result.stdout[-512:], "stderr": result.stderr[-512:],
+                 "boundary_exit_code": boundary.returncode, "boundary_observation": boundary.stdout[-512:]}}
         return Score(value=probe["exit_code"] == 0, metadata={{"probe": probe}})
     return score
 
@@ -127,5 +158,5 @@ log = logs[0]
 sample = log.samples[0] if log.samples else None
 score = sample.score if sample else None
 probe = score.metadata["probe"] if score and score.metadata and "probe" in score.metadata else {{}}
-json.dump({{"exit_code": probe.get("exit_code"), "observed": probe.get("stdout", ""), "stderr": probe.get("stderr", ""), "evaluator_status": "COMPLETED" if str(log.status).lower() == "success" else "EVALUATOR_ERROR", "log_error": str(log.error) if log.error else ""}}, open("{output.as_posix()}", "w"))
+json.dump({{"exit_code": probe.get("exit_code"), "observed": probe.get("stdout", ""), "stderr": probe.get("stderr", ""), "boundary_exit_code": probe.get("boundary_exit_code"), "boundary_observation": probe.get("boundary_observation", ""), "evaluator_status": "COMPLETED" if str(log.status).lower() == "success" else "EVALUATOR_ERROR", "log_error": str(log.error) if log.error else ""}}, open("{output.as_posix()}", "w"))
 '''
