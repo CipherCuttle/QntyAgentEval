@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .fixture import FixtureBaseline, prepare_fixture_workspace, score_fixture_workspace
 from .gitutil import run_git
 from .receipt import sha256_bytes, write_receipt
 from .runners.native import run_native
@@ -163,6 +164,11 @@ def run(args: argparse.Namespace) -> int:
     prompt = prompt_bytes.decode("utf-8")
 
     checkout = prepare_workspace(task, args.source_repo)
+    try:
+        fixture_baseline = prepare_fixture_workspace(task, checkout)
+    except Exception:
+        cleanup_workspace(checkout)
+        raise
 
     run_id = _run_id(task.task_id, args.agent)
     runs_dir = Path(args.runs_dir).resolve()
@@ -190,16 +196,23 @@ def run(args: argparse.Namespace) -> int:
 
         _write_repo_artifacts(checkout, run_dir)
 
-        scoring = score_workspace(
-            task,
-            checkout,
-            agent_exit_code=native.exit_code,
-            timed_out=native.timed_out,
-            raw_stdout=native.stdout,
-            require_agent_process=True,
-            require_final_verdict=True,
-            ignored_changed_paths=(),
-        )
+        if fixture_baseline is not None:
+            scoring = score_fixture_workspace(
+                task, checkout, fixture_baseline,
+                agent_exit_code=native.exit_code,
+                timed_out=native.timed_out,
+            )
+        else:
+            scoring = score_workspace(
+                task,
+                checkout,
+                agent_exit_code=native.exit_code,
+                timed_out=native.timed_out,
+                raw_stdout=native.stdout,
+                require_agent_process=True,
+                require_final_verdict=True,
+                ignored_changed_paths=(),
+            )
 
         if native.timed_out:
             evaluation_status = "RUNNER_TIMEOUT"
@@ -230,7 +243,7 @@ def run(args: argparse.Namespace) -> int:
             "final_head": scoring["final_head"],
             "changed_paths": scoring["changed_paths"],
             "semantic_changed_paths": scoring["semantic_changed_paths"],
-            "ignored_runtime_paths": scoring["ignored_runtime_paths"],
+            "ignored_runtime_paths": scoring.get("ignored_runtime_paths", []),
             "hard_gates": scoring["hard_gates"],
             "pass": bool(task_pass) if task_pass is not None else False,
             "artifacts": {
@@ -274,6 +287,7 @@ def prepare(args: argparse.Namespace) -> int:
 
     try:
         run_dir.mkdir(parents=True, exist_ok=False)
+        fixture_baseline = prepare_fixture_workspace(task, checkout)
 
         prompt_bytes = task.prompt_path.read_bytes()
         prompt_file = run_dir / "prompt.md"
@@ -291,6 +305,9 @@ def prepare(args: argparse.Namespace) -> int:
             "prompt_sha256": sha256_bytes(prompt_bytes),
             "prompt_file": str(prompt_file),
             "workspace": str(checkout),
+            "fixture_baseline": (
+                fixture_baseline.as_dict() if fixture_baseline is not None else None
+            ),
         }
 
         write_receipt(run_dir / "prepared.json", prepared)
@@ -343,16 +360,24 @@ def score(args: argparse.Namespace) -> int:
             ignored_runtime_paths,
         )
 
-        scoring = score_workspace(
-            task,
-            checkout,
-            agent_exit_code=None,
-            timed_out=False,
-            raw_stdout="",
-            require_agent_process=False,
-            require_final_verdict=False,
-            ignored_changed_paths=ignored_runtime_paths,
-        )
+        if prepared.get("fixture_baseline") is not None:
+            scoring = score_fixture_workspace(
+                task,
+                checkout,
+                FixtureBaseline.from_dict(prepared["fixture_baseline"]),
+                ignored_changed_paths=ignored_runtime_paths,
+            )
+        else:
+            scoring = score_workspace(
+                task,
+                checkout,
+                agent_exit_code=None,
+                timed_out=False,
+                raw_stdout="",
+                require_agent_process=False,
+                require_final_verdict=False,
+                ignored_changed_paths=ignored_runtime_paths,
+            )
 
         receipt = {
             "schema_version": "0.1.2",
@@ -373,7 +398,7 @@ def score(args: argparse.Namespace) -> int:
             "final_head": scoring["final_head"],
             "changed_paths": scoring["changed_paths"],
             "semantic_changed_paths": scoring["semantic_changed_paths"],
-            "ignored_runtime_paths": scoring["ignored_runtime_paths"],
+            "ignored_runtime_paths": scoring.get("ignored_runtime_paths", []),
             "hard_gates": scoring["hard_gates"],
             "pass": scoring["pass"],
             "artifacts": {

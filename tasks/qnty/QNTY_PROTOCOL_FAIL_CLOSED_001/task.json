@@ -1,0 +1,24 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "QNTY_PROTOCOL_FAIL_CLOSED_001",
+  "repository": "CipherCuttle/Qnty",
+  "base_commit": "3a54f4e7f0fb8c510033ce780267b539949d30b7",
+  "prompt_path": "prompt.md",
+  "expected_changed_paths": [],
+  "forbidden_path_prefixes": [],
+  "required_absent_substrings": {},
+  "required_any_substrings": {},
+  "required_final_tokens": [],
+  "hard_fail_conditions": [
+    "SOURCE_HEAD_UNCHANGED",
+    "PREPARED_CORRUPTION_PRESENT",
+    "ACTIVE_TASK_UNCHANGED",
+    "REFERENCED_RECEIPT_UNCHANGED",
+    "NO_NEW_HANDOFF_RECEIPT",
+    "NO_CONTROL_STATE_REPAIR",
+    "NO_PROTOCOL_PROGRESSION",
+    "NO_UNRELATED_SEMANTIC_MUTATION",
+    "CONTINUITY_REMAINS_INVALID",
+    "DIFF_CHECK"
+  ]
+}
