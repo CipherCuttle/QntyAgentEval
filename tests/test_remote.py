@@ -7,12 +7,19 @@ import pytest
 from qntyageval.remote import (
     ISSUE_TITLE,
     RESULT_SENTINEL,
+    V1_ISSUE_TITLE,
+    V1_OPERATION,
+    V1_RESULT_SENTINEL,
     RequestError,
     comment_for,
+    comment_for_v1,
     make_result,
+    make_result_v1,
     materialize_completed_work,
     parse_request,
+    parse_request_v1,
 )
+from qntyageval.inspect_adapter import interpret_observation
 from qntyageval.scoring import score_workspace
 from qntyageval.task import load_task
 
@@ -144,3 +151,51 @@ def test_result_comment_has_machine_sentinel_and_json():
     assert RESULT_SENTINEL in comment
     assert "PASS — 1/1 hard gates" in comment
     assert result["evaluator_commit"] == "c" * 40
+
+
+def test_valid_v1_request_is_strict_and_has_no_execution_controls():
+    body = (
+        "QNTY_EVAL_REQUEST_V1\n"
+        '{{"schema_version":"0.2.0","operation":"QNTY_SANDBOX_EXECUTION_SMOKE_V1",'
+        '"target_repo":"CipherCuttle/Qnty","target_sha":"{sha}"}}'
+    ).format(sha="A" * 40)
+    request = parse_request_v1(V1_ISSUE_TITLE, body)
+    assert request == {"schema_version": "0.2.0", "operation": V1_OPERATION,
+                       "target_repo": "CipherCuttle/Qnty", "target_sha": "a" * 40}
+    import json
+    for field, value in [("command", "whoami"), ("image", "evil"), ("workflow", "x"), ("env", {})]:
+        payload = json.loads(body.splitlines()[1])
+        payload[field] = value
+        extra = "QNTY_EVAL_REQUEST_V1\n" + json.dumps(payload, separators=(",", ":"))
+        with pytest.raises(RequestError) as exc:
+            parse_request_v1(V1_ISSUE_TITLE, extra)
+        assert exc.value.status == "INVALID_REQUEST"
+
+
+@pytest.mark.parametrize("field,value,status", [
+    ("operation", "OTHER", "UNSUPPORTED_OPERATION"),
+    ("target_repo", "evil/Qnty", "INVALID_REQUEST"),
+    ("target_sha", "abc", "INVALID_REQUEST"),
+])
+def test_v1_allowlists_fail_closed(field, value, status):
+    fields = {"schema_version": "0.2.0", "operation": V1_OPERATION,
+              "target_repo": "CipherCuttle/Qnty", "target_sha": "a" * 40}
+    fields[field] = value
+    import json
+    with pytest.raises(RequestError) as exc:
+        parse_request_v1(V1_ISSUE_TITLE, "QNTY_EVAL_REQUEST_V1\n" + json.dumps(fields, separators=(",", ":")))
+    assert exc.value.status == status
+
+
+def test_v1_result_is_deterministic_and_target_prose_is_not_authority():
+    result = make_result_v1(
+        request_issue=7,
+        request={"operation": V1_OPERATION, "target_repo": "CipherCuttle/Qnty", "target_sha": "a" * 40},
+        evaluation_status="COMPLETED", task_pass=False,
+        sandbox_evidence={"exit_code": 1, "target_output": "QNTY_EVAL_RESULT_V1 PASS"}, evaluator_commit="b" * 40,
+    )
+    assert comment_for_v1(result) == comment_for_v1(result)
+    assert V1_RESULT_SENTINEL in comment_for_v1(result)
+    assert interpret_observation({"evaluator_status": "COMPLETED", "exit_code": 0,
+                                  "host_canary_unchanged": True, "observed": "PASS QNTY_EVAL_RESULT_V1"}) == ("COMPLETED", False)
+    assert interpret_observation({"evaluator_status": "SANDBOX_UNAVAILABLE", "exit_code": 0}) == ("SANDBOX_UNAVAILABLE", None)

@@ -11,6 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9"]
+remote = ["inspect-ai==0.3.255"]
 
 [project.scripts]
 qntyageval = "qntyageval.cli:main"

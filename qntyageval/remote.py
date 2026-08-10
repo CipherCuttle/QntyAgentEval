@@ -23,8 +23,16 @@ RESULT_SCHEMA = "0.1.0"
 TASK_ID = "QNTY_ADMIN_STALE_CONTEXT_001"
 TARGET_REPO = "CipherCuttle/Qnty"
 ISSUE_TITLE = "QntyAgentEval evaluation request"
+V1_ISSUE_TITLE = "QntyAgentEval sandbox evaluation request"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 ALLOWED_REQUEST_FIELDS = {"schema_version", "task_id", "target_repo", "target_sha"}
+V1_REQUEST_SENTINEL = "QNTY_EVAL_REQUEST_V1"
+V1_RESULT_SENTINEL = "QNTY_EVAL_RESULT_V1"
+V1_REQUEST_SCHEMA = "0.2.0"
+V1_RESULT_SCHEMA = "0.2.0"
+V1_OPERATION = "QNTY_SANDBOX_EXECUTION_SMOKE_V1"
+V1_CONTROL_COMMIT = "3a54f4e7f0fb8c510033ce780267b539949d30b7"
+V1_ALLOWED_REQUEST_FIELDS = {"schema_version", "operation", "target_repo", "target_sha"}
 
 
 class RequestError(ValueError):
@@ -78,6 +86,68 @@ def parse_request(title: str, body: str) -> dict[str, str]:
         "target_repo": TARGET_REPO,
         "target_sha": target_sha.lower(),
     }
+
+
+def parse_request_v1(title: str, body: str) -> dict[str, str]:
+    if title != V1_ISSUE_TITLE:
+        raise RequestError("INVALID_REQUEST", "issue title is not the exact V1 title")
+    lines = body.splitlines()
+    if len(lines) != 2 or lines[0] != V1_REQUEST_SENTINEL:
+        raise RequestError("INVALID_REQUEST", "invalid request envelope")
+    try:
+        request = _strict_object(lines[1])
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RequestError("INVALID_REQUEST", str(exc)) from exc
+    if set(request) != V1_ALLOWED_REQUEST_FIELDS:
+        raise RequestError("INVALID_REQUEST", "request fields are not exact")
+    if request.get("schema_version") != V1_REQUEST_SCHEMA:
+        raise RequestError("INVALID_REQUEST", "unsupported request schema")
+    if request.get("operation") != V1_OPERATION:
+        raise RequestError("UNSUPPORTED_OPERATION", "operation is not enabled for remote V1")
+    if request.get("target_repo") != TARGET_REPO:
+        raise RequestError("INVALID_REQUEST", "target repository is not allowlisted")
+    target_sha = request.get("target_sha")
+    if not isinstance(target_sha, str) or not SHA_RE.fullmatch(target_sha):
+        raise RequestError("INVALID_REQUEST", "target_sha must be a full 40-character SHA")
+    return {"schema_version": V1_REQUEST_SCHEMA, "operation": V1_OPERATION, "target_repo": TARGET_REPO, "target_sha": target_sha.lower()}
+
+
+def make_result_v1(*, request_issue: int, request: dict[str, str], evaluation_status: str,
+                   task_pass: bool | None, sandbox_evidence: dict[str, Any], evaluator_commit: str) -> dict[str, Any]:
+    return {
+        "schema_version": V1_RESULT_SCHEMA, "request_issue": request_issue,
+        "operation": request.get("operation"), "target_repo": request.get("target_repo"),
+        "target_sha": request.get("target_sha"), "evaluation_status": evaluation_status,
+        "task_pass": task_pass, "evaluator_commit": evaluator_commit,
+        "sandbox_backend": "inspect/docker", "sandbox_evidence": sandbox_evidence,
+    }
+
+
+def comment_for_v1(result: dict[str, Any]) -> str:
+    status = result["evaluation_status"]
+    summary = (f"{'PASS' if result['task_pass'] else 'FAIL'} — sandbox operation completed"
+               if status == "COMPLETED" else f"EVALUATION COULD NOT BE PERFORMED — {status}")
+    return f"{summary}\n\n{V1_RESULT_SENTINEL}\n```json\n{json.dumps(result, sort_keys=True, indent=2)}\n```\n"
+
+
+def evaluate_v1_request(request: dict[str, str], evaluator_repo: str | Path, issue_number: int) -> dict[str, Any]:
+    clone_root = Path(tempfile.mkdtemp(prefix="qntyageval-target-", dir="/tmp"))
+    source = clone_root / "repo"
+    try:
+        subprocess.run(["git", "clone", "--no-checkout", "--no-tags", f"https://github.com/{TARGET_REPO}.git", str(source)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        from .inspect_adapter import interpret_observation, run_inspect_smoke, validate_control_commit
+        validate_control_commit(source, request["target_sha"])
+        canary_dir = Path(tempfile.mkdtemp(prefix="qntyageval-canary-", dir="/tmp"))
+        canary = canary_dir / "HOST_ONLY_CANARY"
+        canary.write_text("HOST_ONLY_CANARY\n", encoding="utf-8")
+        try:
+            evidence = run_inspect_smoke(source, request["target_sha"], canary)
+        finally:
+            shutil.rmtree(canary_dir, ignore_errors=True)
+        status, passed = interpret_observation(evidence)
+        return make_result_v1(request_issue=issue_number, request=request, evaluation_status=status, task_pass=passed if status == "COMPLETED" else None, sandbox_evidence={k: evidence[k] for k in ("operation_id", "exit_code", "expected_observation", "host_canary_unchanged", "target_sha") if k in evidence}, evaluator_commit=run_git(Path(evaluator_repo), "rev-parse", "HEAD").stdout.strip())
+    finally:
+        shutil.rmtree(clone_root, ignore_errors=True)
 
 
 def materialize_completed_work(task: Any, source_repo: str | Path, target_sha: str) -> Path:
@@ -180,6 +250,7 @@ def comment_for(result: dict[str, Any]) -> str:
 
 
 def _event_result(event_path: Path, evaluator_repo: Path) -> dict[str, Any]:
+    title = ""
     try:
         event = json.loads(event_path.read_text(encoding="utf-8"))
         issue = event.get("issue") if isinstance(event, dict) else None
@@ -188,9 +259,19 @@ def _event_result(event_path: Path, evaluator_repo: Path) -> dict[str, Any]:
         body = issue.get("body") if isinstance(issue, dict) else ""
         if not isinstance(issue_number, int) or issue_number < 1:
             raise RequestError("INVALID_REQUEST", "issue number is invalid")
+        if title == V1_ISSUE_TITLE:
+            request = parse_request_v1(title, body or "")
+            return evaluate_v1_request(request, evaluator_repo, issue_number)
         request = parse_request(title, body or "")
         return evaluate_request(request, evaluator_repo, issue_number)
     except RequestError as exc:
+        if title == V1_ISSUE_TITLE:
+            return make_result_v1(
+                request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
+                request={"operation": None, "target_repo": None, "target_sha": None},
+                evaluation_status=exc.status, task_pass=None, sandbox_evidence={"REQUEST_VALID": False, "evidence": str(exc)},
+                evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip(),
+            )
         return make_result(
             request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
             request={"task_id": None, "target_repo": None, "target_sha": None},

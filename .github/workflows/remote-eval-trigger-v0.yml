@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   evaluate:
+    if: github.event.issue.title != 'QntyAgentEval sandbox evaluation request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +28,33 @@ jobs:
           case "$ISSUE_NUMBER" in ''|*[!0-9]*) exit 1;; esac
           endpoint="repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments"
           existing_id="$(gh api --paginate "$endpoint" --jq '.[] | select(.body | contains("QNTY_EVAL_RESULT_V0")) | .id' | head -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" -F body=@result-comment.md
+          else
+            gh api --method POST "$endpoint" -F body=@result-comment.md
+          fi
+
+  evaluate-inspect-v1:
+    if: github.event.issue.title == 'QntyAgentEval sandbox evaluation request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned Inspect remote dependency
+        run: python -m pip install '.[remote]'
+      - name: Evaluate bounded Inspect sandbox operation
+        run: python -m qntyageval.remote --event "$GITHUB_EVENT_PATH" --output result-comment.md
+      - name: Upsert authoritative V1 result comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in ''|*[!0-9]*) exit 1;; esac
+          endpoint="repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments"
+          existing_id="$(gh api --paginate "$endpoint" --jq '.[] | select(.body | contains("QNTY_EVAL_RESULT_V1")) | .id' | head -n 1)"
           if [ -n "$existing_id" ]; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" -F body=@result-comment.md
           else
