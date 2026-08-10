@@ -24,6 +24,7 @@ The workflow updates one authoritative issue comment containing
 false means the task was evaluated and failed; the other statuses indicate
 that evaluation could not be performed.
 
-`REMOTE_EVAL_INSPECT_V1` is intentionally not implemented. It is the future
-boundary for tasks that need untrusted target-code execution, using an Inspect
-sandbox and a host-side scorer. Fixture 002 remains outside this remote V0.
+The separate `QntyAgentEval sandbox evaluation request` title selects the
+versioned Inspect Docker lane documented in
+`docs/REMOTE_EVAL_INSPECT_V1.md`. Fixture 002 remains outside both remote
+contracts.

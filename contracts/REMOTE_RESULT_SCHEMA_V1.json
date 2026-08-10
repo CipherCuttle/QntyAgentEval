@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_issue", "operation", "target_repo", "target_sha", "evaluation_status", "task_pass", "evaluator_commit", "sandbox_backend", "sandbox_evidence"],
+  "properties": {
+    "schema_version": {"const": "0.2.0"},
+    "request_issue": {"type": "integer", "minimum": 0},
+    "operation": {"type": ["string", "null"]},
+    "target_repo": {"type": ["string", "null"]},
+    "target_sha": {"type": ["string", "null"]},
+    "evaluation_status": {"enum": ["COMPLETED", "INVALID_REQUEST", "UNSUPPORTED_OPERATION", "TARGET_NOT_FOUND", "TARGET_INCOMPATIBLE", "SANDBOX_UNAVAILABLE", "EVALUATOR_ERROR"]},
+    "task_pass": {"type": ["boolean", "null"]},
+    "evaluator_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sandbox_backend": {"const": "inspect/docker"},
+    "sandbox_evidence": {"type": "object", "additionalProperties": true}
+  }
+}
