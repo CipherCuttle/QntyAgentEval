@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_issue", "task_id", "target_repo", "target_sha", "evaluation_status", "task_pass", "hard_gates", "changed_paths", "evaluator_commit"],
+  "properties": {
+    "schema_version": {"const": "0.3.0"},
+    "request_issue": {"type": "integer", "minimum": 1},
+    "task_id": {"const": "QNTYLAB_BREADTH_V2_SEALED_FORWARD_OBSERVATION_001"},
+    "target_repo": {"const": "CipherCuttle/QntyLab"},
+    "target_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "evaluation_status": {"enum": ["COMPLETED", "INVALID_REQUEST", "UNSUPPORTED_TASK", "TARGET_NOT_FOUND", "BASE_NOT_ANCESTOR_OR_INCOMPATIBLE", "TARGET_INCOMPATIBLE", "EVALUATOR_ERROR"]},
+    "task_pass": {"type": ["boolean", "null"]},
+    "hard_gates": {"type": "object"},
+    "changed_paths": {"type": "array", "items": {"type": "string"}},
+    "evaluator_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}

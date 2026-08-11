@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "target_repo", "target_sha"],
+  "properties": {
+    "schema_version": {"const": "0.3.0"},
+    "task_id": {"const": "QNTYLAB_BREADTH_V2_SEALED_FORWARD_OBSERVATION_001"},
+    "target_repo": {"const": "CipherCuttle/QntyLab"},
+    "target_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"}
+  }
+}

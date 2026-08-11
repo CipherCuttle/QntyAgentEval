@@ -33,8 +33,17 @@ V1_RESULT_SCHEMA = "0.2.0"
 V1_OPERATION = "QNTY_SANDBOX_EXECUTION_SMOKE_V1"
 V1_CONTROL_COMMIT = "3a54f4e7f0fb8c510033ce780267b539949d30b7"
 V1_ALLOWED_REQUEST_FIELDS = {"schema_version", "operation", "target_repo", "target_sha"}
+V2_REQUEST_SENTINEL = "QNTY_EVAL_REQUEST_V2"
+V2_RESULT_SENTINEL = "QNTY_EVAL_RESULT_V2"
+V2_ISSUE_TITLE = "QntyAgentEval QntyLab evaluation request"
+V2_REQUEST_SCHEMA = "0.3.0"
+V2_RESULT_SCHEMA = "0.3.0"
+V2_TASK_ID = "QNTYLAB_BREADTH_V2_SEALED_FORWARD_OBSERVATION_001"
+V2_TARGET_REPO = "CipherCuttle/QntyLab"
+V2_ALLOWED_REQUEST_FIELDS = {"schema_version", "task_id", "target_repo", "target_sha"}
 RESULT_VERSION_V0 = "V0"
 RESULT_VERSION_V1 = "V1"
+RESULT_VERSION_V2 = "V2"
 
 
 class RequestError(ValueError):
@@ -114,6 +123,50 @@ def parse_request_v1(title: str, body: str) -> dict[str, str]:
     return {"schema_version": V1_REQUEST_SCHEMA, "operation": V1_OPERATION, "target_repo": TARGET_REPO, "target_sha": target_sha.lower()}
 
 
+def parse_request_v2(title: str, body: str) -> dict[str, str]:
+    if title != V2_ISSUE_TITLE:
+        raise RequestError("INVALID_REQUEST", "issue title is not the exact V2 title")
+    lines = body.splitlines()
+    if len(lines) != 2 or lines[0] != V2_REQUEST_SENTINEL:
+        raise RequestError("INVALID_REQUEST", "invalid request envelope")
+    try:
+        request = _strict_object(lines[1])
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RequestError("INVALID_REQUEST", str(exc)) from exc
+    if set(request) != V2_ALLOWED_REQUEST_FIELDS:
+        raise RequestError("INVALID_REQUEST", "request fields are not exact")
+    if request.get("schema_version") != V2_REQUEST_SCHEMA:
+        raise RequestError("INVALID_REQUEST", "unsupported request schema")
+    if request.get("task_id") != V2_TASK_ID:
+        raise RequestError("UNSUPPORTED_TASK", "task is not enabled for remote V2")
+    if request.get("target_repo") != V2_TARGET_REPO:
+        raise RequestError("INVALID_REQUEST", "target repository is not allowlisted")
+    target_sha = request.get("target_sha")
+    if not isinstance(target_sha, str) or not SHA_RE.fullmatch(target_sha):
+        raise RequestError("INVALID_REQUEST", "target_sha must be a full 40-character SHA")
+    return {"schema_version": V2_REQUEST_SCHEMA, "task_id": V2_TASK_ID, "target_repo": V2_TARGET_REPO, "target_sha": target_sha.lower()}
+
+
+def make_result_v2(*, request_issue: int, request: dict[str, str], evaluation_status: str,
+                   task_pass: bool | None, hard_gates: dict[str, Any], changed_paths: list[str],
+                   evaluator_commit: str) -> dict[str, Any]:
+    return {"schema_version": V2_RESULT_SCHEMA, "request_issue": request_issue,
+            "task_id": request.get("task_id"), "target_repo": request.get("target_repo"),
+            "target_sha": request.get("target_sha"), "evaluation_status": evaluation_status,
+            "task_pass": task_pass, "hard_gates": hard_gates, "changed_paths": changed_paths,
+            "evaluator_commit": evaluator_commit}
+
+
+def comment_for_v2(result: dict[str, Any]) -> str:
+    status = result["evaluation_status"]
+    if status == "COMPLETED":
+        passed = sum(1 for gate in result["hard_gates"].values() if gate.get("pass"))
+        summary = f"{'PASS' if result['task_pass'] else 'FAIL'} — {passed}/{len(result['hard_gates'])} evaluator gates"
+    else:
+        summary = f"EVALUATION COULD NOT BE PERFORMED — {status}"
+    return f"{summary}\n\n{V2_RESULT_SENTINEL}\n```json\n{json.dumps(result, sort_keys=True, indent=2)}\n```\n"
+
+
 def make_result_v1(*, request_issue: int, request: dict[str, str], evaluation_status: str,
                    task_pass: bool | None, sandbox_evidence: dict[str, Any], evaluator_commit: str) -> dict[str, Any]:
     return {
@@ -148,6 +201,21 @@ def evaluate_v1_request(request: dict[str, str], evaluator_repo: str | Path, iss
             shutil.rmtree(canary_dir, ignore_errors=True)
         status, passed = interpret_observation(evidence)
         return make_result_v1(request_issue=issue_number, request=request, evaluation_status=status, task_pass=passed if status == "COMPLETED" else None, sandbox_evidence={k: evidence[k] for k in ("operation_id", "exit_code", "expected_observation", "host_canary_unchanged", "target_sha") if k in evidence}, evaluator_commit=run_git(Path(evaluator_repo), "rev-parse", "HEAD").stdout.strip())
+    finally:
+        shutil.rmtree(clone_root, ignore_errors=True)
+
+
+def evaluate_v2_request(request: dict[str, str], evaluator_repo: str | Path, issue_number: int) -> dict[str, Any]:
+    from .breadth_v2 import evaluate_target
+    clone_root = Path(tempfile.mkdtemp(prefix="qntyageval-qntylab-", dir="/tmp"))
+    source = clone_root / "repo"
+    try:
+        subprocess.run(["git", "clone", "--no-checkout", "--no-tags", f"https://github.com/{V2_TARGET_REPO}.git", str(source)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        target_exists = subprocess.run(["git", "-C", str(source), "cat-file", "-e", f"{request['target_sha']}^{{commit}}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if target_exists.returncode != 0:
+            raise RequestError("TARGET_NOT_FOUND", "target commit is unavailable")
+        scoring = evaluate_target(source, request["target_sha"])
+        return make_result_v2(request_issue=issue_number, request=request, evaluation_status="COMPLETED", task_pass=scoring["pass"], hard_gates=scoring["hard_gates"], changed_paths=scoring["changed_paths"], evaluator_commit=run_git(Path(evaluator_repo), "rev-parse", "HEAD").stdout.strip())
     finally:
         shutil.rmtree(clone_root, ignore_errors=True)
 
@@ -264,6 +332,9 @@ def _event_result(event_path: Path, evaluator_repo: Path) -> tuple[str, dict[str
         if title == V1_ISSUE_TITLE:
             request = parse_request_v1(title, body or "")
             return RESULT_VERSION_V1, evaluate_v1_request(request, evaluator_repo, issue_number)
+        if title == V2_ISSUE_TITLE:
+            request = parse_request_v2(title, body or "")
+            return RESULT_VERSION_V2, evaluate_v2_request(request, evaluator_repo, issue_number)
         request = parse_request(title, body or "")
         return RESULT_VERSION_V0, evaluate_request(request, evaluator_repo, issue_number)
     except RequestError as exc:
@@ -274,6 +345,13 @@ def _event_result(event_path: Path, evaluator_repo: Path) -> tuple[str, dict[str
                 evaluation_status=exc.status, task_pass=None, sandbox_evidence={"REQUEST_VALID": False, "evidence": str(exc)},
                 evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip(),
             )
+        if title == V2_ISSUE_TITLE:
+            return RESULT_VERSION_V2, make_result_v2(
+                request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
+                request={"task_id": None, "target_repo": None, "target_sha": None},
+                evaluation_status=exc.status, task_pass=None,
+                hard_gates={"REQUEST_VALID": {"pass": False, "evidence": str(exc)}}, changed_paths=[],
+                evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip())
         return RESULT_VERSION_V0, make_result(
             request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
             request={"task_id": None, "target_repo": None, "target_sha": None},
@@ -290,6 +368,13 @@ def _event_result(event_path: Path, evaluator_repo: Path) -> tuple[str, dict[str
                 sandbox_evidence={"evaluator_error": str(exc)},
                 evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip(),
             )
+        if title == V2_ISSUE_TITLE:
+            return RESULT_VERSION_V2, make_result_v2(
+                request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
+                request={"task_id": None, "target_repo": None, "target_sha": None},
+                evaluation_status="EVALUATOR_ERROR", task_pass=None,
+                hard_gates={"EVALUATOR_ERROR": {"pass": False, "evidence": str(exc)}}, changed_paths=[],
+                evaluator_commit=run_git(evaluator_repo, "rev-parse", "HEAD").stdout.strip())
         return RESULT_VERSION_V0, make_result(
             request_issue=int(issue_number) if isinstance(issue_number, int) else 0,
             request={"task_id": None, "target_repo": None, "target_sha": None},
@@ -305,7 +390,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result_version, result = _event_result(args.event, Path.cwd())
-    renderer = comment_for_v1 if result_version == RESULT_VERSION_V1 else comment_for
+    renderer = comment_for_v1 if result_version == RESULT_VERSION_V1 else comment_for_v2 if result_version == RESULT_VERSION_V2 else comment_for
     args.output.write_text(renderer(result), encoding="utf-8")
     return 0
 
